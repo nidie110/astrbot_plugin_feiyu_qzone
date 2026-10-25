@@ -1,0 +1,13 @@
+name: astrbot_plugin_feiyu_qzone
+display_name: "大肥鱼·QQ资料与空间"
+desc: "改自己 QQ 的昵称/签名/性别、发删空间说说，走 NapCat 扩展 action，不存密码与 cookie"
+help: "管理员指令：/账号信息、/改昵称 新名字、/改签名 内容、/改性别 男/女、/发说说、/删说说 tid"
+version: 1.1.0
+author: "部署助手"
+repo: ""
+astrbot_version: ">=4.11.0"
+tags:
+  - QQ
+  - 空间
+  - NapCat
+  - 资料
