@@ -4,11 +4,28 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+_KIT_PATH = _Path(__file__).resolve().parent / "_feiyu_kit.py"
+kit = _sys.modules.get("_feiyu_kit")
+if kit is None:
+    # 全进程只有一份 kit：动作注册表必须共享，所以谁先加载谁就是那份，后来者直接复用。
+    # 磁盘上的 kit 改动要重启整个 AstrBot 进程才生效（面板重载插件不会换掉已经加载的模块）。
+    import importlib.util as _ilu  # noqa: PLC0415
+
+    _spec = _ilu.spec_from_file_location("_feiyu_kit", _KIT_PATH)
+    _fresh = _ilu.module_from_spec(_spec)
+    _sys.modules["_feiyu_kit"] = _fresh
+    _spec.loader.exec_module(_fresh)
+    kit = _fresh
 
 PLUGIN_NAME = "astrbot_plugin_feiyu_qzone"
 
 UGC_RIGHT = {1: "所有人可见", 4: "好友可见", 16: "部分好友可见", 64: "仅自己可见", 128: "部分好友不可见"}
 VISIBILITY = {"public": 1, "friends": 4, "private": 64, "self": 64, "部分": 16}
+
+DEFAULT_CONFIG = {"owner_ids": ""}
 
 
 def _client(event: AstrMessageEvent):
@@ -34,6 +51,13 @@ class FeiyuQzone(Star):
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
+        # 只有 owner_ids 一项：改资料、发说说这类不可逆动作要按号认人
+        self.cfg = kit.merge_config(DEFAULT_CONFIG, config)
+        kit.register_capability("feiyu_qzone", "能改自己QQ的昵称、签名、性别，能发说说", "admin")
+        kit.register_action("改签名", self.tool_change_signature, "改QQ签名，参数 text")
+        kit.register_action("改昵称", self.tool_change_nickname, "改QQ昵称，参数 nickname")
+        kit.register_action("改性别", self.tool_change_gender, "改QQ资料性别，参数 gender")
+        kit.register_action("发说说", self.tool_post_qzone, "发QQ空间说说，参数 content")
 
     async def _call(self, event: AstrMessageEvent, action: str, **payload):
         bot = _client(event)
@@ -53,7 +77,6 @@ class FeiyuQzone(Star):
 
     # ================= LLM 工具（她自己会用的） =================
 
-    @filter.llm_tool(name="change_qq_signature")
     async def tool_change_signature(self, event: AstrMessageEvent, text: str):
         """改自己的 QQ 个性签名。只在主人（管理员）明确要求时使用，比如“你把签名改成xxx”。
 
@@ -62,7 +85,7 @@ class FeiyuQzone(Star):
         Args:
             text(string): 新的个性签名，20 字以内最好
         """
-        if not event.is_admin():
+        if not kit.is_owner(event, self.cfg):
             return "这个得主人开口我才能动。"
         text = (text or "").strip()
         if not text:
@@ -73,7 +96,6 @@ class FeiyuQzone(Star):
         ret, err = await self._call(event, "set_qq_profile", nickname=nickname, personal_note=text[:60])
         return f"签名改成「{text[:60]}」了。" if not err else f"没改成：{err}"
 
-    @filter.llm_tool(name="change_qq_nickname")
     async def tool_change_nickname(self, event: AstrMessageEvent, nickname: str):
         """改自己的 QQ 昵称。只在主人（管理员）明确要求时使用。
 
@@ -82,7 +104,7 @@ class FeiyuQzone(Star):
         Args:
             nickname(string): 新昵称，16 字以内
         """
-        if not event.is_admin():
+        if not kit.is_owner(event, self.cfg):
             return "这个得主人开口我才能动。"
         nickname = (nickname or "").strip()
         if not nickname:
@@ -90,7 +112,6 @@ class FeiyuQzone(Star):
         ret, err = await self._call(event, "set_qq_profile", nickname=nickname[:32])
         return f"昵称改成「{nickname[:32]}」了。" if not err else f"没改成：{err}"
 
-    @filter.llm_tool(name="change_qq_gender")
     async def tool_change_gender(self, event: AstrMessageEvent, gender: str):
         """改自己 QQ 资料里的性别。只在主人（管理员）明确要求时使用。
 
@@ -99,7 +120,7 @@ class FeiyuQzone(Star):
         Args:
             gender(string): male / female / unknown（男/女/未知）
         """
-        if not event.is_admin():
+        if not kit.is_owner(event, self.cfg):
             return "这个得主人开口我才能动。"
         mapping = {"male": 1, "男": 1, "female": 2, "女": 2, "unknown": 0, "未知": 0, "保密": 0, "": 0}
         key = str(gender or "").strip().lower()
@@ -113,7 +134,6 @@ class FeiyuQzone(Star):
         label = {1: "男", 2: "女", 0: "未知"}[sex]
         return f"性别改成「{label}」了。" if not err else f"没改成：{err}"
 
-    @filter.llm_tool(name="post_qzone_moment")
     async def tool_post_qzone(self, event: AstrMessageEvent, content: str, visibility: str = "private"):
         """发一条 QQ 空间说说。只在主人（管理员）明确要求“发个说说/发条空间/把这个发空间”时使用。
 
@@ -123,7 +143,7 @@ class FeiyuQzone(Star):
             content(string): 说说正文，不超过 300 字
             visibility(string): 可见范围，private（仅自己，默认）/ friends（好友）/ public（所有人）
         """
-        if not event.is_admin():
+        if not kit.is_owner(event, self.cfg):
             return "发空间这个得主人点头。"
         content = (content or "").strip()
         if not content:
